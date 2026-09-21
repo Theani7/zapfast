@@ -3,12 +3,19 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag name (e.g. v0.14.0)'
+        required: true
+        default: 'v0.14.0'
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event.inputs.tag_name || github.ref_name }}
   # Baked into the binary by settings.rs; releases built without the
   # secret simply ship keyless and the picker asks for one.
   ZAPFAST_GIPHY_KEY: ${{ secrets.ZAPFAST_GIPHY_KEY || secrets.FASTSAPP_GIPHY_KEY }}
@@ -55,7 +62,7 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="zapfast-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="zapfast-${RELEASE_TAG}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${{ matrix.target }}/release/zapfast.exe" "dist/$name/"
@@ -80,7 +87,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $version = $env:RELEASE_TAG.TrimStart("v")
           $arch = "${{ matrix.target }}".Split("-")[0]
           $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
           if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
@@ -135,25 +142,27 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '4.0'
-      - name: Install native packaging
-        run: gem install native-packages --version 0.6.0 --no-document
-
       - name: App bundle
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           mkdir -p dist/macos-input
           bash packaging/macos/bundle.sh universal/zapfast dist/macos-input/ZapFast.app "$version"
           cp README.md LICENSE dist/macos-input/
 
-      - name: Package, sign and notarize macOS app
+      - name: Package macOS DMG
         run: |
-          native-packages build \
-            --version "${GITHUB_REF_NAME#v}" --target macos-universal --defer-recipes \
-            --output "$RUNNER_TEMP/macos-packages"
-          cp "$RUNNER_TEMP/macos-packages/packages/macos-universal/dmg/"*.dmg dist/
-
-      - name: Verify the notarized release app
-        run: bash packaging/macos/verify.sh "dist/zapfast-${GITHUB_REF_NAME}-macos-universal.dmg"
+          version="${RELEASE_TAG#v}"
+          if [ -n "${APPLE_CERTIFICATE_P12:-}" ]; then
+            gem install native-packages --version 0.6.0 --no-document
+            native-packages build \
+              --version "$version" --target macos-universal --defer-recipes \
+              --output "$RUNNER_TEMP/macos-packages"
+            cp "$RUNNER_TEMP/macos-packages/packages/macos-universal/dmg/"*.dmg dist/
+            bash packaging/macos/verify.sh "dist/zapfast-${RELEASE_TAG}-macos-universal.dmg"
+          else
+            echo "No Apple Developer ID credentials configured. Packaging ad-hoc signed DMG..."
+            ruby packaging/macos/dmg.rb dist/macos-input "dist/zapfast-${RELEASE_TAG}-macos-universal.dmg"
+          fi
 
       - uses: actions/upload-artifact@v7
         with:
@@ -167,6 +176,7 @@ jobs:
   flatpak:
     name: Flatpak bundle
     needs: build
+    continue-on-error: true
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
@@ -179,12 +189,13 @@ jobs:
           path: dist
       - name: Unpack the Linux build
         run: |
-          tar xzf dist/zapfast-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz -C packaging/flatpak
-          mv packaging/flatpak/zapfast-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu packaging/flatpak/built
+          name="zapfast-${RELEASE_TAG}-x86_64-unknown-linux-gnu"
+          tar xzf "dist/$name.tar.gz" -C packaging/flatpak
+          mv "packaging/flatpak/$name" packaging/flatpak/built
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
           manifest-path: packaging/flatpak/rocks.zapfast.ZapFast.bundle.yml
-          bundle: zapfast-${{ github.ref_name }}-x86_64.flatpak
+          bundle: zapfast-${{ env.RELEASE_TAG }}-x86_64.flatpak
           cache: false
           upload-artifact: false
       - uses: actions/upload-artifact@v7
@@ -196,7 +207,10 @@ jobs:
   publish:
     name: GitHub release
     needs: [build, macos, flatpak]
+    if: always() && needs.build.result == 'success' && needs.macos.result == 'success'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v7
         with:
@@ -208,11 +222,12 @@ jobs:
           sha256sum * > checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: dist/*
           generate_release_notes: true
 
   packaging:
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.repository == 'crmne/zapfast'
     needs: publish
     uses: ./.github/workflows/packaging.yml
     with:
