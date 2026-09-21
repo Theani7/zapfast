@@ -8,6 +8,8 @@
 /.cache/
 
 /dist/
+*.dmg
+*.app/
 
 /packaging/flatpak/built/
 /packaging/flatpak/cargo-sources.json
