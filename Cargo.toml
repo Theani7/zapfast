@@ -20,6 +20,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+mimalloc = { version = "0.1", default-features = false }
 # Hashes saved stickers by content. Already included through wacore.
 sha2 = "0.11"
 # Decrypts Signal sticker packs. All four crates are already included through

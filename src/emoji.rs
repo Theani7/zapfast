@@ -27,7 +27,7 @@ pub const PLACEHOLDER: char = '\u{2B1B}';
 const TEXTURE_WIDTH: u32 = 72;
 
 struct Font {
-    bytes: Vec<u8>,
+    bytes: std::borrow::Cow<'static, [u8]>,
     index: u32,
     /// Maps a glyph sequence to its ligature glyph.
     ligatures: HashMap<Vec<u32>, u32>,
@@ -61,14 +61,27 @@ fn load() -> Option<Font> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     if let Some((path, index)) = find()
         && let Ok(bytes) = std::fs::read(&path)
-        && let Some(font) = load_bytes(bytes, index, &path.display().to_string())
+        && let Some(font) = load_bytes(
+            std::borrow::Cow::Owned(bytes),
+            index,
+            &path.display().to_string(),
+        )
     {
         return Some(font);
     }
-    load_bytes(BUNDLED.to_vec(), 0, "bundled Noto Color Emoji")
+    load_bytes(
+        std::borrow::Cow::Borrowed(BUNDLED),
+        0,
+        "bundled Noto Color Emoji",
+    )
 }
 
-fn load_bytes(bytes: Vec<u8>, index: u32, source: &str) -> Option<Font> {
+fn load_bytes(
+    bytes: impl Into<std::borrow::Cow<'static, [u8]>>,
+    index: u32,
+    source: &str,
+) -> Option<Font> {
+    let bytes = bytes.into();
     let font = FontRef::from_index(&bytes, index).ok()?;
     if font.bitmap_strikes().is_empty() {
         log::info!("{source} has no bitmap emoji");
@@ -273,21 +286,34 @@ impl Font {
     }
 }
 
-/// Uploaded emoji textures for each egui context.
+/// Maximum uploaded emoji textures kept in memory.
+const MAX_EMOJI_TEXTURES: usize = 256;
+
+#[derive(Default)]
+struct InnerCache {
+    textures: HashMap<String, Option<TextureHandle>>,
+    order: Vec<String>,
+}
+
+/// Uploaded emoji textures for each egui context with LRU eviction.
 #[derive(Clone, Default)]
-struct Cache(Arc<Mutex<HashMap<String, Option<TextureHandle>>>>);
+struct Cache(Arc<Mutex<InnerCache>>);
 
 fn texture(ctx: &egui::Context, cluster: &str) -> Option<TextureHandle> {
     let cache: Cache = ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<Cache>(egui::Id::new("emoji-cache"))
             .clone()
     });
-    let mut map = cache
+    let mut inner = cache
         .0
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(known) = map.get(cluster) {
-        return known.clone();
+    if let Some(known) = inner.textures.get(cluster).cloned() {
+        if let Some(pos) = inner.order.iter().position(|k| k == cluster) {
+            let key = inner.order.remove(pos);
+            inner.order.push(key);
+        }
+        return known;
     }
     let handle = font().and_then(|font| {
         let font_ref = font.font_ref()?;
@@ -296,7 +322,12 @@ fn texture(ctx: &egui::Context, cluster: &str) -> Option<TextureHandle> {
         let image = font.image(&font_ref, glyph)?;
         Some(ctx.load_texture(format!("emoji-{cluster}"), image, TextureOptions::LINEAR))
     });
-    map.insert(cluster.to_owned(), handle.clone());
+    if inner.order.len() >= MAX_EMOJI_TEXTURES {
+        let evicted = inner.order.remove(0);
+        inner.textures.remove(&evicted);
+    }
+    inner.order.push(cluster.to_owned());
+    inner.textures.insert(cluster.to_owned(), handle.clone());
     handle
 }
 
@@ -511,7 +542,7 @@ mod tests {
 
     #[test]
     fn the_bundled_font_renders_colour_emoji() {
-        let font = load_bytes(BUNDLED.to_vec(), 0, "test font").expect("bundled font");
+        let font = load_bytes(BUNDLED, 0, "test font").expect("bundled font");
         let font_ref = font.font_ref().expect("font face");
         let glyph = font
             .glyph(&font_ref, &['\u{1F600}'])
@@ -613,7 +644,7 @@ mod tests {
 
     #[test]
     fn the_bundled_font_joins_sequences() {
-        let font = load_bytes(BUNDLED.to_vec(), 0, "test font").expect("bundled font");
+        let font = load_bytes(BUNDLED, 0, "test font").expect("bundled font");
         let font_ref = font.font_ref().expect("font face");
         for sequence in ["🇩🇪", "👍🏽", "👨‍👩‍👧"] {
             assert_joined(&font, &font_ref, sequence);
@@ -633,6 +664,22 @@ mod tests {
         let glyph = font.glyph(&font_ref, &['😀']).expect("glyph");
         let image = font.image(&font_ref, glyph).expect("picture");
         assert_eq!(image.size[0], TEXTURE_WIDTH as usize);
+    }
+
+    #[test]
+    fn emoji_texture_cache_is_capped_to_limit() {
+        let ctx = egui::Context::default();
+        for i in 0..300 {
+            let cluster = format!("{i}");
+            let _ = texture(&ctx, &cluster);
+        }
+        let cache: Cache = ctx.data_mut(|data| {
+            data.get_temp_mut_or_default::<Cache>(egui::Id::new("emoji-cache"))
+                .clone()
+        });
+        let inner = cache.0.lock().unwrap();
+        assert!(inner.textures.len() <= MAX_EMOJI_TEXTURES);
+        assert_eq!(inner.order.len(), MAX_EMOJI_TEXTURES);
     }
 }
 

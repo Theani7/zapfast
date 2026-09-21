@@ -7,12 +7,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use std::sync::Arc;
+
 use skrifa::MetadataProvider as _;
 
 /// Registered fallback name, font bytes, and face index.
 pub struct Fallback {
     pub name: String,
-    pub bytes: Vec<u8>,
+    pub bytes: Arc<[u8]>,
     pub index: u32,
 }
 
@@ -102,6 +104,8 @@ fn load() -> Vec<Fallback> {
     // Read and register a face only once when it covers several scripts.
     let mut fonts: Vec<Fallback> = Vec::new();
     let mut taken: Vec<(PathBuf, u32)> = Vec::new();
+    let mut file_cache: std::collections::HashMap<PathBuf, Arc<[u8]>> =
+        std::collections::HashMap::new();
     for (script, _, _) in FALLBACK_SCRIPTS {
         let Some(candidate) = best.get(script) else {
             log::debug!("no fallback face covers {script}");
@@ -110,12 +114,19 @@ fn load() -> Vec<Fallback> {
         if taken.contains(&(candidate.path.clone(), candidate.index)) {
             continue;
         }
-        let bytes = match std::fs::read(&candidate.path) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                log::warn!("cannot read {}: {error}", candidate.path.display());
-                continue;
-            }
+        let bytes = match file_cache.get(&candidate.path) {
+            Some(existing) => existing.clone(),
+            None => match std::fs::read(&candidate.path) {
+                Ok(bytes) => {
+                    let shared: Arc<[u8]> = bytes.into();
+                    file_cache.insert(candidate.path.clone(), shared.clone());
+                    shared
+                }
+                Err(error) => {
+                    log::warn!("cannot read {}: {error}", candidate.path.display());
+                    continue;
+                }
+            },
         };
         log::debug!(
             "{script} fallback: {} (face {})",
@@ -171,6 +182,7 @@ fn probe_file(path: &Path, han: &str, best: &mut BTreeMap<&str, Candidate>) {
     let Ok(file) = std::fs::File::open(path) else {
         return;
     };
+    let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
     // Memory-map files so scanning touches only headers, names, and charmaps.
     //
     // Safety: the read-only mapping does not outlive this call. Replacing the
@@ -206,7 +218,14 @@ fn probe_file(path: &Path, han: &str, best: &mut BTreeMap<&str, Candidate>) {
             if !covers {
                 continue;
             }
-            let score = face_score(&family, attributes.weight.value(), han, hint);
+            let mut score = face_score(&family, attributes.weight.value(), han, hint);
+            // Penalize oversized font collections so smaller dedicated fonts
+            // are preferred over multi-megabyte collections when available.
+            if file_size > 25 * 1024 * 1024 {
+                score += 150;
+            } else if file_size > 10 * 1024 * 1024 {
+                score += 40;
+            }
             // Break score ties by path for deterministic selection.
             if best
                 .get(script)

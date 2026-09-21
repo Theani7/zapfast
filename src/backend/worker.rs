@@ -3039,6 +3039,9 @@ impl Worker {
                 }
             }
             Command::Shutdown => {}
+            Command::TrimMemory => {
+                let _ = self.archive.shrink_memory();
+            }
             Command::OlderFailed { chat, error } => {
                 self.pending_older.remove(&chat);
                 self.emit(Event::OlderFetched { chat, more: true });

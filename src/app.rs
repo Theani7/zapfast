@@ -21,6 +21,8 @@ use crate::tray::{TrayCommand, TrayService};
 
 /// Initial and incremental message-page size.
 pub const PAGE: usize = 60;
+/// Maximum conversations retained in memory.
+pub const MAX_CACHED_CONVERSATIONS: usize = 10;
 /// Minimum delay between phone history requests.
 const PHONE_COOLDOWN: Duration = Duration::from_secs(6);
 /// WhatsApp message-edit window.
@@ -472,6 +474,8 @@ impl App {
         self.window_focused = false;
         self.hide_intent = false;
         self.wants_show = false;
+        self.trim_conversations(2);
+        self.backend.send(Command::TrimMemory);
         if let Some(tray) = &mut self.tray {
             tray.hidden();
         }
@@ -1382,7 +1386,36 @@ impl App {
         }
     }
 
+    /// Limits resident conversations in memory to reduce RAM usage.
+    pub fn trim_conversations(&mut self, max_keep: usize) {
+        if self.conversations.len() <= max_keep {
+            return;
+        }
+        let mut keys: HashSet<ChatId> = HashSet::new();
+        if let Some(open) = &self.open_chat {
+            keys.insert(open.clone());
+        }
+        for draft_chat in self.drafts.keys() {
+            keys.insert(draft_chat.clone());
+        }
+        for (id, conv) in &self.conversations {
+            if conv.loading_older || conv.fetching_phone {
+                keys.insert(id.clone());
+            }
+        }
+        for chat in &self.chats {
+            if keys.len() >= max_keep {
+                break;
+            }
+            if self.conversations.contains_key(&chat.id) {
+                keys.insert(chat.id.clone());
+            }
+        }
+        self.conversations.retain(|id, _| keys.contains(id));
+    }
+
     fn ensure_loaded(&mut self, chat: &str) {
+        self.trim_conversations(MAX_CACHED_CONVERSATIONS);
         let conversation = self.conversations.entry(chat.to_owned()).or_default();
         if !conversation.requested {
             conversation.requested = true;
@@ -2551,6 +2584,7 @@ impl App {
             Action::HideWindow => {
                 if self.tray.is_some() {
                     self.hide_intent = true;
+                    ctx.forget_all_images();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
@@ -3805,5 +3839,26 @@ mod name_tests {
             thumbnail: None,
         };
         assert_eq!(app.message_text(&message), "ciao @Carmine");
+    }
+
+    #[test]
+    fn trim_conversations_bounds_memory_and_protects_active_chats() {
+        let mut app = app();
+        for i in 0..15 {
+            let id = format!("{i}@s.whatsapp.net");
+            let mut chat = Chat::new(id.clone(), format!("Chat {i}"));
+            chat.last_activity = i as i64;
+            app.chats.push(chat);
+            app.conversations.insert(id, Default::default());
+        }
+        assert_eq!(app.conversations.len(), 15);
+        app.open_chat = Some("0@s.whatsapp.net".into());
+        app.drafts.insert("1@s.whatsapp.net".into(), "Draft".into());
+
+        app.trim_conversations(5);
+        assert_eq!(app.conversations.len(), 5);
+        // Open chat and draft chat must be preserved regardless of recency
+        assert!(app.conversations.contains_key("0@s.whatsapp.net"));
+        assert!(app.conversations.contains_key("1@s.whatsapp.net"));
     }
 }

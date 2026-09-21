@@ -235,7 +235,9 @@ impl Archive {
     }
 
     fn prepare(connection: Connection) -> Result<Self> {
-        connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+        connection.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -2000;",
+        )?;
         connection.execute_batch(SCHEMA)?;
         connection.execute_batch(polls::SCHEMA)?;
         for (table, column, definition) in MIGRATIONS {
@@ -250,6 +252,12 @@ impl Archive {
             }
         }
         Ok(Self { connection })
+    }
+
+    /// Purges SQLite internal caches and returns freed memory to the allocator.
+    pub fn shrink_memory(&self) -> Result<()> {
+        self.connection.execute_batch("PRAGMA shrink_memory;")?;
+        Ok(())
     }
 
     /// Creates a chat or replaces a phone-number title with a better name.
@@ -711,6 +719,12 @@ impl Archive {
                 let quoted: Option<String> = row.get(7)?;
                 let reactions: String = row.get(8)?;
                 let mentions: String = row.get(11)?;
+                let content: Content =
+                    serde_json::from_str(&content).unwrap_or(Content::Unsupported {
+                        what: "unreadable".into(),
+                    });
+                let has_path = content.media().and_then(|m| m.path.as_ref()).is_some();
+                let thumbnail = if has_path { None } else { row.get(10)? };
                 Ok(Message {
                     id: row.get(0)?,
                     chat: chat.to_owned(),
@@ -718,9 +732,7 @@ impl Archive {
                     sender_name: row.get(2)?,
                     from_me: row.get(3)?,
                     timestamp: row.get(4)?,
-                    content: serde_json::from_str(&content).unwrap_or(Content::Unsupported {
-                        what: "unreadable".into(),
-                    }),
+                    content,
                     status: status_from_rank(row.get(6)?),
                     delivered_at: row.get(13)?,
                     read_at: row.get(14)?,
@@ -729,7 +741,7 @@ impl Archive {
                     edited: row.get(9)?,
                     mentions: serde_json::from_str(&mentions).unwrap_or_default(),
                     forwarded: row.get(12)?,
-                    thumbnail: row.get(10)?,
+                    thumbnail,
                 })
             })?;
         let mut messages: Vec<Message> = rows.collect::<Result<_>>()?;
@@ -768,6 +780,11 @@ impl Archive {
             let quoted: Option<String> = row.get(8)?;
             let reactions: String = row.get(9)?;
             let mentions: String = row.get(12)?;
+            let content: Content = serde_json::from_str(&content).unwrap_or(Content::Unsupported {
+                what: "unreadable".into(),
+            });
+            let has_path = content.media().and_then(|m| m.path.as_ref()).is_some();
+            let thumbnail = if has_path { None } else { row.get(11)? };
             Ok(Message {
                 id: row.get(1)?,
                 chat,
@@ -775,9 +792,7 @@ impl Archive {
                 sender_name: row.get(3)?,
                 from_me: row.get(4)?,
                 timestamp: row.get(5)?,
-                content: serde_json::from_str(&content).unwrap_or(Content::Unsupported {
-                    what: "unreadable".into(),
-                }),
+                content,
                 status: status_from_rank(row.get(7)?),
                 delivered_at: row.get(14)?,
                 read_at: row.get(15)?,
@@ -786,7 +801,7 @@ impl Archive {
                 edited: row.get(10)?,
                 mentions: serde_json::from_str(&mentions).unwrap_or_default(),
                 forwarded: row.get(13)?,
-                thumbnail: row.get(11)?,
+                thumbnail,
             })
         })?;
         let messages: Vec<Message> = rows.collect::<Result<_>>()?;
@@ -816,6 +831,12 @@ impl Archive {
                 let quoted: Option<String> = row.get(7)?;
                 let reactions: String = row.get(8)?;
                 let mentions: String = row.get(11)?;
+                let content: Content =
+                    serde_json::from_str(&content).unwrap_or(Content::Unsupported {
+                        what: "unreadable".into(),
+                    });
+                let has_path = content.media().and_then(|m| m.path.as_ref()).is_some();
+                let thumbnail = if has_path { None } else { row.get(10)? };
                 Ok(Message {
                     id: row.get(0)?,
                     chat: chat.to_owned(),
@@ -823,9 +844,7 @@ impl Archive {
                     sender_name: row.get(2)?,
                     from_me: row.get(3)?,
                     timestamp: row.get(4)?,
-                    content: serde_json::from_str(&content).unwrap_or(Content::Unsupported {
-                        what: "unreadable".into(),
-                    }),
+                    content,
                     status: status_from_rank(row.get(6)?),
                     delivered_at: row.get(13)?,
                     read_at: row.get(14)?,
@@ -834,7 +853,7 @@ impl Archive {
                     edited: row.get(9)?,
                     mentions: serde_json::from_str(&mentions).unwrap_or_default(),
                     forwarded: row.get(12)?,
-                    thumbnail: row.get(10)?,
+                    thumbnail,
                 })
             },
         )?;
@@ -980,6 +999,12 @@ impl Archive {
                 let quoted: Option<String> = row.get(6)?;
                 let reactions: String = row.get(7)?;
                 let mentions: String = row.get(10)?;
+                let content: Content =
+                    serde_json::from_str(&content).unwrap_or(Content::Unsupported {
+                        what: "unreadable".into(),
+                    });
+                let has_path = content.media().and_then(|m| m.path.as_ref()).is_some();
+                let thumbnail = if has_path { None } else { row.get(9)? };
                 Ok(Message {
                     id: id.to_owned(),
                     chat: chat.to_owned(),
@@ -987,9 +1012,7 @@ impl Archive {
                     sender_name: row.get(1)?,
                     from_me: row.get(2)?,
                     timestamp: row.get(3)?,
-                    content: serde_json::from_str(&content).unwrap_or(Content::Unsupported {
-                        what: "unreadable".into(),
-                    }),
+                    content,
                     status: status_from_rank(row.get(5)?),
                     delivered_at: row.get(12)?,
                     read_at: row.get(13)?,
@@ -998,7 +1021,7 @@ impl Archive {
                     edited: row.get(8)?,
                     mentions: serde_json::from_str(&mentions).unwrap_or_default(),
                     forwarded: row.get(11)?,
-                    thumbnail: row.get(9)?,
+                    thumbnail,
                 })
             })
             .optional()

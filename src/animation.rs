@@ -14,15 +14,15 @@ use std::time::{Duration, Instant};
 use egui::{ColorImage, TextureHandle, TextureOptions};
 
 /// Maximum frame width uploaded to the GPU.
-const MAX_WIDTH: u32 = 320;
+const MAX_WIDTH: u32 = 200;
 /// Maximum frames kept per animation.
-const MAX_FRAMES: usize = 150;
+const MAX_FRAMES: usize = 80;
 /// Time an unseen animation remains decoded.
-const IDLE: Duration = Duration::from_secs(20);
+const IDLE: Duration = Duration::from_secs(10);
 /// Maximum concurrent decoders.
 const MAX_DECODERS: usize = 2;
 /// Global texture-frame budget. Least-recently-used animations are removed first.
-const MAX_RESIDENT_FRAMES: usize = 450;
+const MAX_RESIDENT_FRAMES: usize = 160;
 
 static DECODING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 

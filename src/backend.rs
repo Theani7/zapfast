@@ -344,6 +344,8 @@ pub enum Command {
     Unlink,
     Reconnect,
     Shutdown,
+    /// Purges SQLite caches and scratch memory.
+    TrimMemory,
     /// Internal send result.
     Sent {
         chat: ChatId,
